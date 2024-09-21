@@ -1,0 +1,940 @@
+// ------------------------------------------------------------------------
+//  fe_dyn_logit_EIKdata.gss
+//
+//  This Gauss program estimates slope parameters and 
+//  Average Transition Probabilities (ATPs) in a 
+//  Fixed Effects Dynamic [AR(1)] Multinomial Logit model
+//  using a Fixed Effects Conditional MLE approach
+//
+//  The dataset is the working sample in the paper
+//  Erdem, Imai, and Keane (QME, 2003), which is also
+//  used in the empirical application in 
+//  Aguirregabiria and Carro.
+//
+//  The estimation method for the slope parameters beta is
+//  Chamberlain's Conditional MLE
+//
+//  The estimation method for the ATPs is the plug-in
+//  method in Aguirregabiria & Carro (Forthcoming):
+//  Review of Economics and Statistics
+//
+//  by Victor Aguirregabiria
+//      This version: July 7, 2021
+// ------------------------------------------------------------------------
+//  Model:
+//      y[it] = arg_max_{j \in 1,2, ..., J} U_j[it]
+//  and for j = 1,2, ...,J:
+//      U_j[it] = alpha_j[i] + beta_j * 1{ y[i,t-1] = j } + epsilon_j[it]
+//
+//  Parameter beta_j measures the "habit" utility of maintaning the same choice as in previous period.
+//
+//  Variables epsilon_j[it] are i.i.d. over j,i,t Extreme Value type I
+//
+//  The ATP[j,j] is the integral over the distribution of alpha[i]
+//  of the Logit probability of choosing j at period t given that the choice
+//  was j at period t-1,
+//      exp{alpha_j[i] + beta_j} / [exp{alpha_j[i] + beta_j} + sum_over_k/=j exp{alpha_k[i]}]
+// ------------------------------------------------------------------------
+
+new;
+cls;
+
+// 1.1. Procedure for the estimation of frequencies of choice histories. 
+
+proc (3) = freqpjj_1to3(yobs,noprint) ;  
+    // -----------------------------------------------------------------------------------
+    //  freqpjj_1to3 -   Procedure for the estimation of 
+    //                   of frequencies of choice histories 
+    //                   P[y1=j], P[(y1,y2)=(k,j)], P[(y1,y2,y3)=(k,j,l)]
+    //                   for every k, j, l in {0, 1, ..., nj}
+    //
+    //  by Victor Aguirregabiria
+    //
+    //  Last revision: July 2, 2021
+    // -----------------------------------------------------------------------------------
+    //  Format:       {freqp_1, freqp_2, freqp_3} = freqpjj_1to3(yobs,noprint)
+    //
+    //  Input:        yobs    - (N x T) matrix with observations of choice histories
+    //                          yobs takes integer values from 0 to nj
+    //
+    //                noprint - Dummy: if 0 -- Results are printed
+    //                                 if 1 -- Results are not printed
+    //                        
+    //  Output:       freqp_1   -  (nj+1) x 1 vector with frequency estimates of 
+    //                              probabilities of 1-period choice histories
+    //                              P[y1=j] for j = 0, 1, ..., nj
+    //                              such that: P[j] = freqp_1[j]
+    //
+    //                freqp_2   -  (nj+1) x (nj+1) matrix with frequency estimates of 
+    //                              probabilities of 2-period choice histories
+    //                              P[(y1,y2)=(k,j)] for k,j = 0, 1, ..., nj
+    //                              such that: P[k,j] = freqp_2[k,j]
+    //
+    //                freqp_3   -  (nj+1) x (nj+1)^2 matrix with frequency estimates of 
+    //                              probabilities of 3-period choice histories
+    //                              P[(y1,y2,y3)=(k,j,l)] for k,j,l = 0, 1, ..., nj
+    //                              such that: P[k,j,l] = freqp_3[k,indj + l - 1]
+    //                                          with indj = (nj+1)*(j-1) + 1 
+    // -----------------------------------------------------------------------------------
+
+    local freqp_1, freqp_2, freqp_3, nn, nt, nj, yval, chist, buffer, j,
+          ind1, ind2 ;
+      
+    format /mb1 /ros 16,6 ;
+    
+    // ----------------------
+    // 1. Basic constants
+    // ----------------------
+    nn = rows(yobs);
+    nt = cols(yobs) ;
+    nj = maxc(maxc(yobs));
+    yval = seqa(0,1,nj+1)' ;
+    
+    // ----------------------------------------------------
+    // 2. Estimating Frequencies 1-period choice histories
+    // ----------------------------------------------------   
+    chist = reshape(yobs,nn*nt,1) ;
+    freqp_1 = sumc(chist.==yval)./rows(chist);
+        
+    // ----------------------------------------------------
+    // 3. Estimating Frequencies 2-period choice histories
+    // ---------------------------------------------------- 
+    chist = reshape(yobs[.,1:nt-1],nn*(nt-1),1) 
+          ~ reshape(yobs[.,2:nt],nn*(nt-1),1) ;          
+    freqp_2 = (chist[.,1].==yval)'*(chist[.,2].==yval)./rows(chist);
+    
+    // ----------------------------------------------------
+    // 4. Estimating Frequencies 3-period choice histories
+    // ---------------------------------------------------- 
+    freqp_3 = zeros(nj+1, (nj+1)*(nj+1)) ;
+    
+    chist = reshape(yobs[.,1:nt-2],nn*(nt-2),1) 
+          ~ reshape(yobs[.,2:nt-1],nn*(nt-2),1) 
+          ~ reshape(yobs[.,3:nt],  nn*(nt-2),1) ;
+     j=1; 
+     do while j<=(nj+1); 
+        ind1 = (nj+1)*(j-1) + 1 ;
+        ind2 = (nj+1)*j ; 
+         
+        buffer = ((chist[.,1].==yval).*(chist[.,3].==(j-1)))'*((chist[.,2].==yval).*(chist[.,3].==(j-1)))
+                ./rows(chist);
+        freqp_3[.,ind1:ind2] = buffer ;
+        j = j+1 ;
+     endo;
+        
+    // --------------------------------
+    // 3. Presentation of Results
+    // --------------------------------
+    if (noprint==0);
+        "" ;
+        "----------------------------------------------------------------";
+        "     Estimated Frequencies for 1-period Histories: P[j]" ;
+        "----------------------------------------------------------------";
+        print freqp_1' ;
+        "----------------------------------------------------------------";
+        "     Estimated Frequencies for 2-period Histories: P[j,j]" ;
+        "----------------------------------------------------------------";
+        print freqp_2 ;
+        "----------------------------------------------------------------";
+        "     Estimated Frequencies for 3-period Histories: P[j,j,j]" ;
+        "----------------------------------------------------------------";
+        j=1; 
+        do while j<=(nj+1); 
+            ind1 = (nj+1)*(j-1) + 1 ;
+            ind2 = (nj+1)*j ; 
+            print freqp_3[.,ind1:ind2] ;
+            j = j+1 ;
+            "----------------------------------------------------------------";
+        endo;
+        "----------------------------------------------------------------";
+    endif;
+    
+  retp(freqp_1,freqp_2,freqp_3) ;
+endp ;
+     
+
+// 1.2. Procedure that computes the matrix of 1-period transition probabilities
+//      using panel data of a discrete variable
+
+proc (2) = transprob(yobs) ;
+    // --------------------------------------------------------------------------------
+    // transprob    -   Procedure that computes the matrix of 1-period 
+    //                  transition probabilities, and the vector of 
+    //                  unconditional probabilities using panel data 
+    //                  of a discrete variable
+    //
+    // by Victor Aguirregabiria
+    //      Last version:  July 7, 2021
+    // --------------------------------------------------------------------------------
+    //  Format:     {freqp, transp} = transprob(yobs) 
+    //
+    //  Inputs:     yobs    -   numn x numt matrix with observations of a discrete 
+    //                          variable that takes values 0, 1, ..., nj
+    //
+    //  Output:     freqp   -   (nj+1) x 1 vector of frequencies for each value of yobs
+    //
+    //              transp  -   (nj+1) x (nj+1) matrix of transition probabilities
+    // --------------------------------------------------------------------------------
+    
+    local nn, nt, nj, yval, yobs_t, yobs_t_1, freqp, transp, j, names_y1, names_y2 ;
+    
+    nn = rows(yobs) ;
+    nt = cols(yobs) ;
+    nj = maxc(yobs) ;
+    yval = seqa(0,1,nj+1) ;
+    names_y1 = "y[t] = " $+  ftocv(yval,1,0) ;
+    names_y2 = "y[t+1] = " $+  ftocv(yval,1,0) ;
+    
+    // 1.   Unconditional choice probabilities
+    freqp = sumc(reshape(yobs,nn*nt,1).==(yval'))/(nn*nt) ;
+
+    // 2.   Transition Probabilities
+    yobs_t = reshape(yobs[.,2:nt],nn*(nt-1),1).==(yval') ;
+    yobs_t_1 = reshape(yobs[.,1:nt-1],nn*(nt-1),1).==(yval') ;
+    transp = (yobs_t_1'*yobs_t)./(yobs_t_1'*ones(nn*(nt-1),1)) ;
+
+    // 3.   Printing Table of Transition Probabilities
+    "" ;
+    "     ----------------------------------------------------------------------------------------------";
+    "     ----------------------------------------------------------------------------------------------";
+    "                                   Estimated Transition Probabilities";
+    "     ----------------------------------------------------------------------------------------------";
+    "           " ;; print $names_y2';; "       Total" ;
+    "     ----------------------------------------------------------------------------------------------";
+    j=1;
+    do while j<=(nj+1);
+        print $names_y1[j];; transp[j,.];; sumr(transp[j,.]);
+        j=j+1 ;
+    endo;
+    "     ----------------------------------------------------------------------------------------------";
+    "                                   Estimated Unconditional Probabilities";
+    "     ----------------------------------------------------------------------------------------------";
+    "           " ;; print $names_y1' ;; "       Total" ;
+    "     ----------------------------------------------------------------------------------------------";
+    "           " ;; freqp';; sumc(freqp);
+    "     ----------------------------------------------------------------------------------------------";
+    "     ----------------------------------------------------------------------------------------------";
+
+    retp(freqp, transp) ;
+endp ;
+
+
+// 1.5. Procedure for estimation of McFadden's Conditional Logit model
+//      without persistent unobserved heterogeneity
+
+/*
+** CLOGIT  -  Maximum Likelihood estimation of McFadden's Conditional Logit
+**            Some parameters can be restricted
+**            Optimization algorithm: Newton's method with analytical 
+**            gradient and hessian
+**
+** by Victor Aguirregabiria
+**      Fist version:   May 1998
+**      Last version:   July 2021
+**
+** Format      {best,varest} = clogit(ydum,x,restx,namesb)
+**
+** Input        ydum    - (nobs x 1) vector of observations of dependet variable
+**                        Categorical variable with values: {1, 2, ..., nalt}
+**
+**              x       - (nobs x (k * nalt)) matrix of explanatory variables
+**                        associated with unrestricted parameters.
+**                        First k columns correspond to alternative 1, and so on
+**
+**              restx   - (nobs x nalt) vector of the sum of the explanatory
+**                        variables whose parameters are restricted to be
+**                        equal to 1.
+**
+**              namesb  - (k x 1) vector with names of parameters
+**
+**
+**  Output      best    - (k x 1) vector with ML estimates.
+**
+**              varest  - (k x k) matrix with estimate of covariance matrix
+**
+*/
+
+proc (2) = clogit(ydum,x,restx,namesb) ;
+  local miny, maxy, cconvb, myzero, nobs, nalt, npar, xysum, j,
+        iter, criter, llike, b0, phat, sumpx, xxm, xbuff,
+        d1llike, d2llike, b1, Avarb, sdb, tstat, 
+        numyj, logL0, lrindex ;
+
+  // Minimum and maximum valus of ydum
+  miny = minc(ydum) ;
+  maxy = maxc(ydum) ;  
+  if miny==0;
+    ydum = ydum + 1;
+  endif ;
+  
+  // Other constants
+  cconvb = 1e-6 ;
+  myzero = 1e-16 ;
+  nobs = rows(ydum) ;
+  nalt = maxc(ydum) ;
+  npar = cols(x)/nalt ;
+  if npar/=rows(namesb) ;
+    "ERROR: Dimensions of x";; npar;; "and of names(b0)";; rows(namesb) ;;
+    "do not match " ;
+    end ;
+  endif;
+
+  xysum = 0 ;
+  j=1;
+  do while j<=nalt ;
+    xysum = xysum + sumc( (ydum.==j).*x[.,npar*(j-1)+1:npar*j] ) ;
+    j=j+1 ;
+  endo ;
+
+  iter=1 ;
+  criter = 1000 ;
+  llike = -nobs ;
+  b0 = ones(npar,1) ;
+
+  do while (criter>cconvb) ;
+  
+    "" ;
+    "Iteration                = " iter ;
+    "Log-Likelihood function  = " llike ;
+    "Norm of b(k)-b(k-1)      = " criter ;
+    "" ;
+  
+    @ Computing probabilities @
+    phat = zeros(nobs,nalt) ;
+    j=1 ;
+    do while j<=nalt ;
+      phat[.,j] = x[.,npar*(j-1)+1:npar*j]*b0 + restx[.,j] ;
+      j=j+1 ;
+    endo ;
+    phat = phat - maxc(phat') ;
+    phat = exp(phat)./sumc(exp(phat')) ;
+
+    @ Computing xmean @
+    sumpx = zeros(nobs,1) ;
+    xxm = 0 ;
+    llike = 0 ;
+    j=1;
+    do while j<=nalt ;
+      xbuff = x[.,npar*(j-1)+1:npar*j] ; 
+      sumpx = sumpx + phat[.,j] .*xbuff ;
+      xxm = xxm + (phat[.,j].*xbuff)'*xbuff ;
+      llike = llike
+            + sumc( (ydum.==j)
+                    .* ln( (phat[.,j].> myzero).*phat[.,j]
+                         + (phat[.,j].<=myzero).*myzero    ) ) ;
+      j=j+1 ;
+    endo ;
+
+    @ Computing gradient @
+    d1llike = xysum - sumc(sumpx) ;
+
+    @ Computing hessian @    
+    d2llike = - (xxm - sumpx'*sumpx) ;
+    
+    @ Gauss iteration @
+    b1 = b0 - inv(d2llike)*d1llike ;
+    criter = sqrt( (b1-b0)'*(b1-b0) ) ;
+    b0 = b1 ;
+    iter = iter + 1 ;
+  endo ;
+
+  Avarb  = inv(-d2llike) ;
+  sdb    = sqrt(diag(Avarb)) ;
+  tstat  = b0./sdb ;
+  
+  numyj  = sumc(ydum.==(seqa(1,1,nalt)')) ;
+  logL0  = sumc(numyj.*ln(numyj./nobs)) ;
+  lrindex = 1 - llike/logL0 ;
+
+  "---------------------------------------------------------------------";
+  "Number of Iterations     = " iter ;
+  "Number of observations   = " nobs ;
+  "Log-Likelihood function  = " llike ;
+  "Likelihood Ratio Index   = " lrindex ;
+  "---------------------------------------------------------------------";
+  "       Parameter         Estimate        Standard        t-ratios";
+  "                                         Errors" ;
+  "---------------------------------------------------------------------";
+  j=1;
+  do while j<=npar;
+    print $namesb[j];;b0[j];;sdb[j];;tstat[j];
+    j=j+1 ;
+  endo;
+  "---------------------------------------------------------------------";
+
+  retp(b0,Avarb) ;
+endp ;
+
+
+// 1.6. Procedure to convert base-n number to decimal number.
+//      This procedure is called by the procedure cmle_clogit (for Chamberlain's CMLE)
+
+proc (1) = basen_to_dec(x,n);
+    // ---------------------------------------------------------------------------------
+    //    basen_to_dec 
+    //        Procedure that transforms a vector of numbers between 0 and n-1 
+    //        (that can be interpreted as a number in base n) to a single decimal number
+    //
+    //    Inputs: 
+    //        x  = vector with number in base n
+    //        n  = base
+    //
+    //    Output: 
+    //        y = decimal integer number that corresponds to x
+    // ---------------------------------------------------------------------------------
+    local dimx, bases, y;
+    
+    // Check
+    if maxc(x) > (n-1);
+      "     Error in procedure basen_to_dec(x,n)";
+      "     Vector x contains values greater than n-1";
+      end;
+    endif;
+    
+    dimx = rows(x);
+    bases = seqa(1,1,dimx);
+    bases = n.^(dimx-bases);
+    y = sumc(x.* bases);
+    retp(y);
+endp;    
+
+// 1.7. Procedure to convert decimal number to base-n number. 
+//      This procedure is called by the procedure cmle_clogit (for Chamberlain's CMLE)
+
+proc (1) = dec_to_basen(x, n, dimy);
+    // ---------------------------------------------------------------------------------
+    //    dec_to_basen(x, n, dimy)
+    //        Procedure that transforms a decimal number into its base n number representation
+    //        The base-n number is a vector of integers between 0 and n-1 
+    //
+    //    Inputs: 
+    //        x  = decimal number
+    //        n  = base
+    //        dimy = dimension of the vector to represent the base-n number
+    //
+    //    Output: 
+    //        y = (dimy x 1) vector with the digits of the base-n number that corresponds to x
+    // ---------------------------------------------------------------------------------  
+    local max, y, t, res, divt;
+     
+    max = (n^dimy) -1;
+    
+    // Check
+    if x>max;
+        "     Error in procedure dec_to_basen(x, n, dimy)";
+        "     Value of x is greater than the maximum base-n number"
+        "     that can be represented with dimy digits   ";
+        end;
+    endif;
+      
+    y = zeros(dimy,1);     
+    t=1;
+    res = x;
+    do while t<=dimy;
+      divt = n^(dimy-t);
+      y[t] = int(res/divt);
+      res = res - y[t] * divt;
+      t = t+1;
+    endo;
+  retp(y);
+endp;
+
+  
+// 1.8. Procedure for Chamberlain's CMLE of Dynamic Multinomial Logit Model 
+
+proc (2) = cmle_clogit(ydum) ;
+    // -----------------------------------------------------------------------------
+    //  cmle_clogit -   Estimation of a Fixed Effects Dynamic Multinomial Logit Model 
+    //                  using Chamberlain's Conditional Maximum Likelihood.
+    //                  The optimization algorithm is a Newton's method.
+    //
+    //  by Victor Aguirregabiria
+    //
+    //  Last revision: July 2, 2021
+    // -----------------------------------------------------------------------------
+    //  Model:
+    //      y[it] = arg_max_{j \in 0, 1, ..., nj} U_j[it]
+    //  and for j = 0, 1, ..., nj:
+    //      U_j[it] = alpha_j[i] + beta_j * 1{ y[i,t-1] = j } + epsilon_j[it]
+    //
+    //  Parameter beta_j measures the "habit" utility of maintaning the same choice 
+    //  as in previous period.
+    //
+    //  Parameter beta_0 is notmalized to zero.
+    //
+    //  Variables epsilon_j[it] are i.i.d. over j,i,t Extreme Value type 
+    // -----------------------------------------------------------------------------
+    //  Format:      {best,varest} = cmle_clogit(ydum)
+    //
+    //  Input:        ydum   - (N x T) matrix with observations of the dependent variable
+    //                          ydum takes integer values from 0 to nj
+    //                        
+    //  Output       best    - CML estimates of beta[1], beta[2], ..., beta[nj]
+    //               varest  - estimate of the covariance matrix
+    // -----------------------------------------------------------------------------
+
+    local nn, nt, nj, nhist, namesb, Smat, Cmat, j, histj, 
+         Cobs, selhist, i, Ji, Si, buff, sum_cobs,
+         eps1, eps2, iter, criter1, criter2, b0, b1,
+         sum_exp, sum_cexp, 
+         loglike, dlogLb0, d2logLb0,     
+         Avarb, sdb, tstat ;
+    
+    format /mb1 /ros 16,6 ;
+    
+    // ----------------------
+    // 1. Basic constants
+    // ----------------------
+    nn = rows(ydum);
+    nt = cols(ydum) ;
+    nj = maxc(maxc(ydum));
+    nhist = (nj+1)^nt ;
+    namesb = "beta_" $+  ftocv(seqa(1,1,nj),1,0) ;
+    
+    // ----------------------------------------------------
+    // 2. Constructing matrices with all possible values
+    //    of staticstic S (sufficient) and C (identifying)
+    // ----------------------------------------------------
+        
+    // Smat is a matrix with the values of the sufficient statistics
+    //
+    // The sufficient statistics are: y_t1, y_tlast, s1, s2, ..., snj
+    // where y_t1 and y_tlast are the initial and last conditions of the history
+    // and sj is the number of times between t=2 and t=T in which y = j
+    // 
+    // Each row of Smat corresponds to a history of y. A column corresponds to
+    // one of the components of the sufficient statistic, sorted as 
+    //    y_t1, y_tlast, s1, s2, ..., snj
+    //
+    // Cmat is a matrix with the values of the statistics that identify parameters beta
+    //
+    // The identifying statistics are: c_11, c_22, ..., c_njnj
+    // where c_jj is the number of times between t=2 and t=T in which 
+    // the history has y[t-1] = y[t] = j
+    // 
+    // Each row of Cmat corresponds to a history of y. A column corresponds to
+    // one of the components of the identifying statistics, sorted as 
+    //    c_11, c_22, ..., c_njnj
+  
+    Smat = zeros(nhist, nj+2) ;
+    Cmat = zeros(nhist, nj);
+    j=1 ;
+    do while j<=nhist ;
+        histj = dec_to_basen(j-1, nj+1, nt) ;
+        Smat[j,1] = histj[1] ;
+        Smat[j,2] = histj[nt] ;
+        Smat[j,3:nj+2] = sumc(histj[2:nt].==(seqa(1,1,nj)'))' ;
+        Cmat[j,.] = sumc( (histj[1:nt-1].==(seqa(1,1,nj)')).*(histj[2:nt].==(seqa(1,1,nj)')) )';
+      
+      //  "";
+      //   print "History";; histj';
+      //   print "   Smat";; Smat[j,.]; 
+      //   print "   Cmat";; Cmat[j,.]; 
+        j=j+1;
+    endo ;
+  
+    // ----------------------
+    // 3. Preparing the data
+    // ----------------------
+        
+    // Classifying histories in the data groups 
+    // with the same vector of sufficient statistics S
+    Cobs = zeros(nn, nj) ;   // Matrix with values of the identifying statistics Cmat in the data
+    selhist = zeros(nn, nhist);  // Matrix of 0s and 1s. Each row corresponds to a history in the data
+                                 // Each column corresponds to one of the possible histories, in the data or not.
+                                 // The entry is 1 iff the history in the column has the same Smat as the history in the data.
+    i=1;
+    do while i<=nn;
+        Ji = basen_to_dec(ydum[i,.]',nj+1);
+        Cobs[i,.] = Cmat[Ji+1, .] ;
+        Si = Smat[Ji+1,.] ;
+        buff = prodc((Smat.==Si)') ;
+        selhist[i,.] = buff' ;
+        i=i+1 ;
+    endo ;
+    sum_cobs = sumc(Cobs) ;
+    
+    // ------------------------------------------------
+    // 4. Newton's algorithm for the maximization
+    //    of the Conditional Likelihood function
+    // ------------------------------------------------ 
+    eps1 = 1E-4 ;
+    eps2 = 1E-2 ;
+    b0 = zeros(nj,1) ;  
+    iter=1 ;
+    criter1 = 1000 ;
+    criter2 = 1000 ;
+
+    do while (criter1>eps1).OR(criter2>eps2) ;      
+ 
+        // Calculating sum of exp{C(y) * beta} for y's with S(y) = S(yi)
+        buff = exp(Cmat * b0) ;
+        sum_exp = selhist * buff ;
+        sum_cexp = selhist * (Cmat .* buff) ;    
+      
+        // Calculating the value of the conditional likelihood function
+        loglike = sum_cobs' * b0 - sumc(ln(sum_exp));
+      
+        // Calculating the vector of scores
+        dlogLb0 = Cobs - (sum_cexp ./ sum_exp) ;
+      
+        // Calculating the outer product of scores
+        d2logLb0 = dlogLb0' * dlogLb0 ;
+      
+  //      "" ;
+  //      "Iteration                = " iter ;
+  //      "Log-Likelihood function  = " loglike ;
+  //      "Norm of b(k)-b(k-1)      = " criter1 ;
+  //      "Norm of Gradient         = " criter2 ;
+  //      "" ;
+      
+        b1 = b0 + invpd(d2logLb0) * sumc(dlogLb0) ;
+        criter1 = sqrt( (b1-b0)'*(b1-b0) ) ;
+        criter2 = sqrt( sumc(dlogLb0)'*sumc(dlogLb0) ) ;
+    
+        b0 = b1 ;
+        iter = iter + 1 ;
+    endo ;
+
+    // Calculating sum of exp{C(y) * beta} for y's with S(y) = S(yi)
+    buff = exp(Cmat * b0) ;
+    sum_exp = selhist * buff ;
+    sum_cexp = selhist * (Cmat .* buff) ;    
+      
+    // Calculating the value of the conditional likelihood function
+    loglike = sum_cobs' * b0 - sumc(ln(sum_exp));
+      
+    // Calculating the vector of scores
+    dlogLb0 = Cobs - (sum_cexp ./ sum_exp) ;
+      
+    // Calculating the outer product of scores
+    d2logLb0 = dlogLb0' * dlogLb0 ;
+
+    Avarb = inv(d2logLb0) ;
+    sdb    = sqrt(diag(Avarb)) ;
+    tstat  = b0./sdb ;
+
+    // --------------------------------
+    // 5. Presentation of Results
+    // --------------------------------
+    "Number of Iterations     = " iter ;
+    "Log-Likelihood function  = " loglike ;
+    "" ;
+    "----------------------------------------------------------------";
+    " Parameter       Estimate        Standard        t-ratios";
+    "                                  Errors" ;
+    "----------------------------------------------------------------";
+    j=1;
+    do while j<=rows(namesb);
+        print $namesb[j];; b0[j];; sdb[j];; tstat[j];
+        j=j+1 ;
+    endo;
+    "----------------------------------------------------------------";
+
+  retp(b0,avarb) ;
+endp ;
+
+
+ // 1.9. Procedure for Fixed Effect estimation of Average Transition Probabilities
+
+proc (4) = fe_atp(yobs, bootsim) ;  
+    // -----------------------------------------------------------------------------------
+    //  fe_atp -   Procedure for the estimation of Average Transition Probabilities (ATP)
+    //             in Fixed Effects Dynamic Multinomial Logit Model.
+    //
+    //      (i) The estimation method is the plug-in method
+    //          in Aguirregabiria and Carro (2021) 
+    //
+    //      (ii) This procedure calls the procedures:
+    //          cmle_clogit     -   for the estimation of beta parameters 
+    //                              using Chamberlain's Conditional Maximum Likelihood.
+    //          freqpjj_1to3    -   for the estimation of frequencies of choice histories
+    //                              P[y1=j], P[(y1,y2)=(j,j)], P[(y1,y2,y3)=(j,j,j)]
+    //
+    //      (iii) The variance matrix is obtained using bootstrap method
+    //
+    //  by Victor Aguirregabiria
+    //
+    //  Last revision: July 2, 2021
+    // -----------------------------------------------------------------------------
+    //  Model:
+    //      y[it] = arg_max_{j \in 0, 1, ..., nj} U_j[it]
+    //  and for j = 0, 1, ..., nj:
+    //      U_j[it] = alpha_j[i] + beta_j * 1{ y[i,t-1] = j } + epsilon_j[it]
+    //
+    //  Parameter beta_j measures the "habit" utility of maintaning the same choice 
+    //  as in previous period.
+    //
+    //  Parameter beta_0 is notmalized to zero.
+    //
+    //  Variables epsilon_j[it] are i.i.d. over j,i,t Extreme Value type 
+    // -----------------------------------------------------------------------------
+    //  The ATP[j] is the integral over the distribution of alpha[i]
+    //  of the Logit probability of choosing j at period t given that the choice
+    //  was j at period t-1,
+    //      exp{alpha_j[i] + beta_j} 
+    //          / [exp{alpha_j[i] + beta_j} + sum_over_k/=j exp{alpha_k[i]}]
+    // ----------------------------------------------------------------------------- 
+    //  Formula for the plug-in estimation of ATP[j]
+    //
+    //      ATP[j] = 2*P[j,j] - P[j,j,j] + sum_over_k\=j_and_l\=j{ exp(beta[k,l] + beta[j,j]) * P[k,j,l] }
+    //
+    //  where P[y1], P[y1,y2], and P[y1,y2,y3] are the probabilities of 
+    //  sub-histories with 1, 2, and 3 periods, respectively.
+    //
+    // ----------------------------------------------------------------------------- 
+    //  Format:      {beta_est, beta_var, atp_est, atp_var} = fe_atp(yobs, bootsim)
+    //
+    //  Input:        yobs    - (N x T) matrix with observations of the dependent variable
+    //                          ydum takes integer values from 0 to nj
+    //                bootsim - Number of bootstrap simulations to calculate variance-
+    //                          covariance matrix
+    //                        
+    //  Output:       beta_est - (nj x 1) vector with estimates of beta parameters
+    //                beta_var - (nj x nj) variance-cocariance matrix of beta estimates
+    //                atp_est - (nj+1 x 1) vector with estimates of ATP[0], ATP[1], ..., ATP[nj]
+    //                atp_var - (nj+1 x nj+1) variance-cocariance matrix
+    // -----------------------------------------------------------------------------
+
+    local nn, nt, nj, names_beta, names_atp, betamat, atpmat,
+          betaest , varbetaest, betavec, matbetaest, freqp_1, freqp_2, freqp_3, 
+          j, k, l, sim, indsim, ysim, ind1, ind2, buffer, indj, 
+          mean_beta, mean_atp, beta_est, beta_var, atp_est, atp_var,
+          sd_beta, t_beta, sd_atp, t_atp ;
+    
+    format /mb1 /ros 16,6 ;
+    
+    // ----------------------
+    // 1. Basic constants
+    // ----------------------
+    nn = rows(yobs);
+    nt = cols(yobs) ;
+    nj = maxc(maxc(yobs));
+    names_beta = "beta_" $+  ftocv(seqa(1,1,nj),1,0) ;
+    names_atp = "ATP_" $+  ftocv(seqa(0,1,nj+1),1,0) ;
+        
+        
+    // ----------------------------------------------------
+    // 2. First "bootstrap" sample is the actual dataset 
+    // ----------------------------------------------------
+    betamat = zeros(bootsim, nj) ;
+    atpmat = zeros(bootsim, nj+1) ;
+    
+    "";
+    "Bootstrap sample =";; "1";
+    
+    // 2.1. Calling procedure for CMLE estimation of betas
+    {betaest , varbetaest} = cmle_clogit(yobs) ;
+    betamat[1,.] = betaest' ;
+    
+    // 2.2. Calling procedure for frequencies of choice histories
+    {freqp_1, freqp_2, freqp_3} = freqpjj_1to3(yobs,1) ;
+    
+    // 2.3. Caculating ATPs
+    //      ATP[j] = 2*P[j,j] - P[j,j,j] 
+    //             + sum_over_k\=j_and_l\=j{ exp(beta[k,l] + beta[j,j] - beta[k,j] + beta[j,l]) * P[k,j,l] }
+    betavec = ( 0 | betaest) ;
+    matbetaest = eye(nj+1) .* betavec ;
+    j=1;
+    do while j<=(nj+1);
+        indj = (nj+1)*(j-1) + 1;
+        buffer = 0 ;
+        k = 1;
+        do while k<=(nj+1);
+            l = 1;
+            do while l<=(nj+1);
+                buffer = buffer 
+                       + (k/=j)*(l/=j)*exp(matbetaest[k,l] + matbetaest[j,j] - matbetaest[k,j] - matbetaest[j,l])
+                          * freqp_3[k,indj+l-1] ;
+                l=l+1;
+            endo;
+            k=k+1;
+        endo;
+        atpmat[1,j] = 2*freqp_2[j,j] - freqp_3[j,indj+j-1] + buffer ;
+        j=j+1;
+    endo; 
+    
+    // ------------------------------------
+    // 3. Loop for Bootstrap Resampling
+    // ------------------------------------
+    sim = 2;
+    do while sim <= bootsim;
+        "";
+        "Bootstrap sample =";; sim;
+        
+        // 3.1.  Random draws of individuals
+        indsim = rndi(nn, 1, (1|nn)); 
+        ysim = yobs[indsim,.]; 
+
+        // 3.2. Calling procedure for CMLE estimation of betas
+        {betaest , varbetaest} = cmle_clogit(ysim) ;
+        betamat[sim,.] = betaest' ;
+    
+        // 3.3. Calling procedure for frequencies of choice histories
+        {freqp_1, freqp_2, freqp_3} = freqpjj_1to3(ysim,1) ;
+    
+        // 3.4. Caclulating ATPs
+        //      ATP[j] = 2*P[j,j] - P[j,j,j] 
+        //             + sum_over_k\=j_and_l\=j{ exp(beta[k,l] + beta[j,j] - beta[k,j] - beta[j,l]) * P[k,j,l] }
+        betavec = ( 0 | betaest) ;
+        matbetaest = eye(nj+1) .* betavec ;
+        j=1;
+        do while j<=(nj+1);
+            indj = (nj+1)*(j-1) + 1;
+            buffer = 0 ;
+            k = 1;
+            do while k<=(nj+1);
+                l = 1;
+                do while l<=(nj+1);
+                    buffer = buffer 
+                        + (k/=j)*(l/=j)*exp(matbetaest[k,l] + matbetaest[j,j] - matbetaest[k,j] + matbetaest[j,l])
+                            * freqp_3[k,indj+l-1] ;
+                    l=l+1;
+                endo;
+                k=k+1;
+            endo;
+            atpmat[sim,j] = 2*freqp_2[j,j] - freqp_3[j,indj+j-1] + buffer ;
+            j=j+1;
+        endo;
+     
+        sim = sim + 1;
+    endo;
+        
+    // ------------------------------------
+    // 4. Estimates and Standard Errors
+    // ------------------------------------
+    beta_est = betamat[1,.]' ;
+    atp_est = atpmat[1,.]' ;   
+        
+    mean_beta = meanc(betamat);
+    mean_atp = meanc(atpmat);        
+        
+    beta_var = (betamat-mean_beta') ;
+    beta_var = (beta_var'*beta_var)./bootsim ;
+        
+    atp_var = (atpmat-mean_atp') ;
+    atp_var = (atp_var'*atp_var)./bootsim ;
+        
+    sd_beta = sqrt(diag(beta_var)) ;
+    t_beta  = beta_est./sd_beta ;
+        
+    sd_atp = sqrt(diag(atp_var)) ;
+    t_atp  = atp_est./sd_atp ;
+
+    // --------------------------------
+    // 5. Presentation of Results
+    // --------------------------------
+    "" ;
+    "----------------------------------------------------------------";
+    "               CML ESTIMATES OF BETA PARAMETERS" ;
+    "----------------------------------------------------------------";
+    " Parameter       Estimate        Standard        t-ratios";
+    "                                  Errors" ;
+    "----------------------------------------------------------------";
+    j=1;
+    do while j<=rows(names_beta);
+        print $names_beta[j];; beta_est[j];; sd_beta[j];; t_beta[j];
+        j=j+1 ;
+    endo;
+    "----------------------------------------------------------------";
+    "" ;
+    "----------------------------------------------------------------";
+    "        ESTIMATES OF AVERAGE TRANSITION PROBABILITIES" ;
+    "----------------------------------------------------------------";
+    " Parameter       Estimate        Standard        t-ratios";
+    "                                  Errors" ;
+    "----------------------------------------------------------------";
+    j=1;
+    do while j<=rows(names_atp);
+        print $names_atp[j];; atp_est[j];; sd_atp[j];; t_atp[j];
+        j=j+1 ;
+    endo;
+    "----------------------------------------------------------------";
+
+  retp(beta_est, beta_var, atp_est, atp_var) ;
+endp ;
+
+// ******************************************************************
+//  *************   MAIN PROGRAM STARTS HERE ************************
+// ******************************************************************
+
+// ----------------------------------------
+// 2.   Reading Dataset (in Excel Format)  
+// ----------------------------------------
+
+bootstraps = 200 ; // Number of bootstrap resamples to obtain Var(beta) and Var(ATP)
+
+// Reading data
+// It reads XLS dataset 
+datamat = xlsReadM("c:/Users/YOLANDA/Dropbox/MYPAPERS/JESUS_CARRO_MEFFECTS/susumu_qme_2003/consumer_feestimation.xls", "A2:H9563"); 
+
+
+// Variables 
+idconsumer	= datamat[.,1] ;    // consumer ID number
+week	    = datamat[.,2] ;    // week ID of the purchase
+store       = datamat[.,3] ;    // store ID of purchase
+brand       = datamat[.,4] ;    // brand ID of purchase
+Ti	        = datamat[.,5] ;    // total number of purchases of household during sample period
+conta       = datamat[.,6] ;    // counter (1, 2, ..., Ti) of the purchase ocassion for the household
+history     = datamat[.,7] ;   // history of brand choices (sequence of length Ti)
+hist4       = datamat[.,8] ;   // history of the first 4 brand choices 
+
+// ------------------------------------------------------------------------ 
+// 3.   Constructing a variable yobs with balanced panel of 
+//      choice histories consisting of all the subhistories of 
+//      length numT 
+//
+//      Example: If individual i is observed for Ti = 6 purchasing events
+//              and numT = 4, then we can create 3 subhistories of length numT
+//              for this individual with purchasing events:
+//                  1 2 3 4
+//                  2 3 4 5
+//                  3 4 5 6
+// ------------------------------------------------------------------------ 
+
+numT = 4;
+selTi = selif(Ti, conta.==1);  
+numN = rows(selTi) ;    // Number of individuals in dataset
+
+spells = (selTi + 1 - numT).*((selTi + 1 - numT).>=0) ; // Number of numT-period spells for each individual
+balnumN = sumc(spells) ;   // Number of numT-periods spells generated from the data
+
+yobs = zeros(balnumN, numT) ;
+ind1 = 1 ;
+indspell = 1 ;
+i=1 ;
+do while i<=numN;
+    if (spells[i]>0);
+        t=1;
+        do while t<=spells[i];          
+            yobs[indspell,.] = brand[ind1+t-1:ind1+t-1+numT-1]' ;
+            indspell = indspell + 1;
+            t=t+1 ;
+        endo ;
+    endif ;
+    ind1 = ind1 + selTi[i] ;
+    i = i+1 ;
+endo ;
+
+// -----------------------------------------------
+// 4. Transition Probabilities using yobs
+// -----------------------------------------------
+{pfreq, ptrans} = transprob(yobs) ;
+
+
+// -------------------------------------------------------------------------------------
+// 5.   Fixed Effects Estimation 
+//      - Chamberlain's Comditional Maximum Likelihood estimation of betas
+//      - Aguirregabiria-Carro estimation of ATPs
+// -------------------------------------------------------------------------------------
+"" ;
+"----------------------------------------------------------";
+"   Chamberlain's Conditional Maximum Likelihood estimation";
+"   Aguirregabiria-Carro estimation of ATPs";
+"----------------------------------------------------------";
+"";
+
+{bcmle, var_bcml, atpest, varatp} = fe_atp(yobs, bootstraps) ;  
+
+end ;
+
